@@ -4,6 +4,8 @@
 #import "StringifiersBase.h"
 #import "CDRSpecFailure.h"
 
+#define TIME_OUT_FOR_WAIT 10.0
+
 namespace Cedar { namespace Matchers {
 
     void CDR_fail(const char *fileName, int lineNumber, NSString * reason);
@@ -20,7 +22,7 @@ namespace Cedar { namespace Matchers {
         ActualValueMatchProxy & operator=(const ActualValueMatchProxy<U> &);
 
     public:
-        explicit ActualValueMatchProxy(const ActualValue<T> &, bool negate = false);
+        explicit ActualValueMatchProxy(const ActualValue<T> &, bool negate = false, bool wait = false);
         ActualValueMatchProxy();
 
         template<typename MatcherType> void operator()(const MatcherType &) const;
@@ -29,18 +31,27 @@ namespace Cedar { namespace Matchers {
     private:
         const ActualValue<T> & actualValue_;
         bool negate_;
+        bool wait_;
     };
 
     template<typename T>
-    ActualValueMatchProxy<T>::ActualValueMatchProxy(const ActualValue<T> & actualValue, bool negate /*= false */)
-    : actualValue_(actualValue), negate_(negate) {}
+    ActualValueMatchProxy<T>::ActualValueMatchProxy(const ActualValue<T> & actualValue, bool negate /*= false */, bool wait /*= false */)
+    : actualValue_(actualValue), negate_(negate), wait_(wait) {}
 
     template<typename T> template<typename MatcherType>
     void ActualValueMatchProxy<T>::operator()(const MatcherType & matcher) const {
-        if (negate_) {
-            actualValue_.execute_negative_match(matcher);
+        if (wait_) {
+            if (negate_) {
+                actualValue_.execute_delayed_negative_match(matcher);
+            } else {
+                actualValue_.execute_delayed_positive_match(matcher);
+            }
         } else {
-            actualValue_.execute_positive_match(matcher);
+            if (negate_) {
+                actualValue_.execute_negative_match(matcher);
+            } else {
+                actualValue_.execute_positive_match(matcher);
+            }
         }
     }
 
@@ -64,10 +75,14 @@ namespace Cedar { namespace Matchers {
 
         ActualValueMatchProxy<T> to;
         ActualValueMatchProxy<T> to_not;
+        ActualValueMatchProxy<T> will;
+        ActualValueMatchProxy<T> will_not;
 
     private:
         template<typename MatcherType> void execute_positive_match(const MatcherType &) const;
         template<typename MatcherType> void execute_negative_match(const MatcherType &) const;
+        template<typename MatcherType> void execute_delayed_positive_match(const MatcherType &) const;
+        template<typename MatcherType> void execute_delayed_negative_match(const MatcherType &) const;
         friend class ActualValueMatchProxy<T>;
 
     private:
@@ -77,7 +92,7 @@ namespace Cedar { namespace Matchers {
     };
 
     template<typename T>
-    ActualValue<T>::ActualValue(const char *fileName, int lineNumber, const T & value) : fileName_(fileName), lineNumber_(lineNumber), value_(value), to(*this), to_not(*this, true) {
+    ActualValue<T>::ActualValue(const char *fileName, int lineNumber, const T & value) : fileName_(fileName), lineNumber_(lineNumber), value_(value), to(*this), to_not(*this, true), will(*this, false, true), will_not(*this, true, true) {
     }
 
     template<typename T>
@@ -95,6 +110,36 @@ namespace Cedar { namespace Matchers {
     void ActualValue<T>::execute_negative_match(const MatcherType & matcher) const {
         if (matcher.matches(value_)) {
             CDR_fail(fileName_.c_str(), lineNumber_, matcher.negative_failure_message_for(value_));
+        }
+    }
+    
+    template<typename T> template<typename MatcherType>
+    void ActualValue<T>::execute_delayed_positive_match(const MatcherType & matcher) const {
+        NSTimeInterval timeOut = TIME_OUT_FOR_WAIT;
+        NSDate *expiryDate = [NSDate dateWithTimeIntervalSinceNow:timeOut];
+        while(1) {
+            if (matcher.matches(value_)) {
+                break;
+            } else if([(NSDate *)[NSDate date] compare:expiryDate] == NSOrderedDescending) {
+                CDR_fail(fileName_.c_str(), lineNumber_, matcher.failure_message_for(value_));
+                break;
+            }
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+    }
+    
+    template<typename T> template<typename MatcherType>
+    void ActualValue<T>::execute_delayed_negative_match(const MatcherType & matcher) const {
+        NSTimeInterval timeOut = TIME_OUT_FOR_WAIT;
+        NSDate *expiryDate = [NSDate dateWithTimeIntervalSinceNow:timeOut];
+        while(1) {
+            if (!matcher.matches(value_)) {
+                break;
+            } else if([(NSDate *)[NSDate date] compare:expiryDate] == NSOrderedDescending) {
+                CDR_fail(fileName_.c_str(), lineNumber_, matcher.negative_failure_message_for(value_));
+                break;
+            }
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
         }
     }
 
